@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Login — deploy-hook{% endblock %}
+
+{% block content %}
+<div class="flex min-h-[70vh] items-center justify-center">
+    <div class="w-full max-w-sm animate-fade-in">
+        <div class="rounded-2xl border border-white/[0.06] bg-surface-1 p-8">
+            <div class="mb-6 text-center">
+                <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/20">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 text-accent-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                </div>
+                <h1 class="text-xl font-bold">deploy-hook</h1>
+                <p class="mt-1 text-sm text-white/40">관리자 비밀번호를 입력하세요</p>
+            </div>
+
+            {% if error %}
+            <div class="mb-4 rounded-lg bg-coral/10 px-4 py-3 text-[13px] text-coral">{{ error }}</div>
+            {% endif %}
+
+            <form method="POST" action="/login">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <input
+                    type="password"
+                    name="password"
+                    placeholder="비밀번호"
+                    required
+                    autofocus
+                    class="w-full rounded-xl border border-white/[0.08] bg-surface-2 px-4 py-3 text-sm text-white placeholder-white/30 outline-none transition focus:border-accent/50 focus:ring-1 focus:ring-accent/30"
+                />
+                <button
+                    type="submit"
+                    class="mt-4 w-full rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-white transition hover:bg-accent-light"
+                >
+                    로그인
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

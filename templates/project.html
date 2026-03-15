@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} — deploy-hook{% endblock %}
+
+{% block content %}
+<div class="animate-fade-in">
+    {% if notice %}
+    <div class="mb-6 rounded-lg px-4 py-3 text-[13px]
+        {% if notice.level == 'success' %}bg-mint/10 text-mint
+        {% elif notice.level == 'error' %}bg-coral/10 text-coral
+        {% else %}bg-accent/10 text-accent-light{% endif %}">
+        {{ notice.message }}
+    </div>
+    {% endif %}
+
+    <!-- Back -->
+    <a href="/" class="mb-6 inline-flex items-center gap-1.5 text-[13px] text-white/40 transition hover:text-white/70">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        Projects
+    </a>
+
+    <!-- Project Header -->
+    <div class="mb-8 flex items-start justify-between">
+        <div class="flex items-center gap-4">
+            <div class="flex h-12 w-12 items-center justify-center rounded-xl
+                {% if project.enabled %}bg-mint/10 text-mint{% else %}bg-white/[0.04] text-white/20{% endif %}">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            </div>
+            <div>
+                <h1 class="text-2xl font-bold tracking-tight">{{ project.name }}</h1>
+                <p class="mt-1 text-sm text-white/40">{{ project.repo_url }}</p>
+            </div>
+        </div>
+        <div class="flex gap-2">
+            <form method="POST" action="/projects/{{ project.id }}/deploy">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button type="submit" class="rounded-xl bg-accent px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-accent-light">
+                    수동 배포
+                </button>
+            </form>
+            <form method="POST" action="/projects/{{ project.id }}/toggle">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button type="submit" class="rounded-xl border border-white/[0.08] px-4 py-2.5 text-[13px] font-medium text-white/60 transition hover:bg-white/[0.06]">
+                    {% if project.enabled %}비활성화{% else %}활성화{% endif %}
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Info + Edit -->
+    <div class="mb-8 grid gap-6 lg:grid-cols-2">
+        <!-- Info Card -->
+        <div class="rounded-2xl border border-white/[0.06] bg-surface-1 p-6">
+            <h2 class="mb-4 text-[15px] font-semibold">프로젝트 정보</h2>
+            <dl class="space-y-3 text-sm">
+                <div class="flex justify-between">
+                    <dt class="text-white/40">배포 경로</dt>
+                    <dd class="font-mono text-[13px] text-white/70">{{ project.deploy_path }}</dd>
+                </div>
+                <div class="flex justify-between">
+                    <dt class="text-white/40">브랜치</dt>
+                    <dd class="font-mono text-[13px] text-white/70">{{ project.branch }}</dd>
+                </div>
+                <div class="flex justify-between">
+                    <dt class="text-white/40">상태</dt>
+                    <dd><span class="rounded-full px-2 py-0.5 text-[11px] font-medium {% if project.enabled %}bg-mint/10 text-mint{% else %}bg-white/[0.06] text-white/30{% endif %}">{% if project.enabled %}활성{% else %}비활성{% endif %}</span></dd>
+                </div>
+                <div class="flex justify-between">
+                    <dt class="text-white/40">생성일</dt>
+                    <dd class="text-[13px] text-white/70">{{ project.created_at }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Edit Card -->
+        <div class="rounded-2xl border border-white/[0.06] bg-surface-1 p-6">
+            <h2 class="mb-4 text-[15px] font-semibold">프로젝트 수정</h2>
+            <form method="POST" action="/projects/{{ project.id }}/update" class="space-y-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <div>
+                    <label class="mb-1 block text-[12px] font-medium text-white/40">이름</label>
+                    <input type="text" name="name" value="{{ project.name }}" required
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2 text-sm text-white outline-none focus:border-accent/50" />
+                </div>
+                <div>
+                    <label class="mb-1 block text-[12px] font-medium text-white/40">레포 URL</label>
+                    <input type="url" name="repo_url" value="{{ project.repo_url }}" required
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2 text-sm text-white outline-none focus:border-accent/50" />
+                </div>
+                <div>
+                    <label class="mb-1 block text-[12px] font-medium text-white/40">배포 경로</label>
+                    <input type="text" name="deploy_path" value="{{ project.deploy_path }}" required
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2 text-sm text-white outline-none focus:border-accent/50" />
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="mb-1 block text-[12px] font-medium text-white/40">브랜치</label>
+                        <input type="text" name="branch" value="{{ project.branch }}" required
+                               class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2 text-sm text-white outline-none focus:border-accent/50" />
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-[12px] font-medium text-white/40">Webhook Secret</label>
+                        <input type="password" name="webhook_secret" value="" minlength="16" placeholder="변경할 때만 입력"
+                               class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2 text-sm text-white outline-none focus:border-accent/50" />
+                        <p class="mt-1 text-[11px] text-white/25">보안상 기존 secret은 다시 표시하지 않습니다.</p>
+                    </div>
+                </div>
+                <div class="flex justify-between pt-2">
+                    <button type="button" onclick="if(confirm('정말 삭제하시겠습니까?')) document.getElementById('delete-form').submit()"
+                            class="rounded-lg px-4 py-2 text-[13px] font-medium text-coral/70 transition hover:bg-coral/10 hover:text-coral">삭제</button>
+                    <button type="submit" class="rounded-lg bg-accent px-5 py-2 text-[13px] font-semibold text-white transition hover:bg-accent-light">저장</button>
+                </div>
+            </form>
+            <form id="delete-form" method="POST" action="/projects/{{ project.id }}/delete" class="hidden">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            </form>
+        </div>
+    </div>
+
+    <!-- Deploy Logs -->
+    <div class="rounded-2xl border border-white/[0.06] bg-surface-1 p-6">
+        <h2 class="mb-4 text-[15px] font-semibold">배포 이력</h2>
+        {% if logs %}
+        <div class="space-y-2">
+            {% for log in logs %}
+            <details class="group rounded-xl border border-white/[0.04] bg-surface-2 transition hover:border-white/[0.08]">
+                <summary class="flex cursor-pointer items-center justify-between px-4 py-3">
+                    <div class="flex items-center gap-3">
+                        <span class="inline-flex h-2 w-2 rounded-full
+                            {% if log.status == 'success' %}bg-mint
+                            {% elif log.status == 'running' %}bg-sun animate-pulse
+                            {% else %}bg-coral{% endif %}"></span>
+                        <span class="font-mono text-[13px] text-white/70">{{ log.commit_sha or '—' }}</span>
+                        <span class="text-[13px] text-white/40">{{ log.commit_message or 'Manual deploy' }}</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span class="text-[12px] text-white/30">{{ log.started_at }}</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/20 transition group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    </div>
+                </summary>
+                <div class="border-t border-white/[0.04] px-4 py-3">
+                    <pre class="max-h-60 overflow-auto whitespace-pre-wrap font-mono text-[12px] text-white/50">{{ log.output or '(no output)' }}</pre>
+                    {% if log.finished_at %}
+                    <p class="mt-2 text-[11px] text-white/20">완료: {{ log.finished_at }}</p>
+                    {% endif %}
+                </div>
+            </details>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="py-8 text-center text-sm text-white/30">배포 이력이 없습니다</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

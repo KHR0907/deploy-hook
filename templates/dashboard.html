@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Projects — deploy-hook{% endblock %}
+
+{% block content %}
+<div class="animate-fade-in">
+    {% if notice %}
+    <div class="mb-6 rounded-lg px-4 py-3 text-[13px]
+        {% if notice.level == 'success' %}bg-mint/10 text-mint
+        {% elif notice.level == 'error' %}bg-coral/10 text-coral
+        {% else %}bg-accent/10 text-accent-light{% endif %}">
+        {{ notice.message }}
+    </div>
+    {% endif %}
+
+    <!-- Header -->
+    <div class="mb-8 flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-bold tracking-tight">Projects</h1>
+            <p class="mt-1 text-sm text-white/40">등록된 프로젝트 {{ projects|length }}개</p>
+        </div>
+        <button onclick="document.getElementById('add-form').classList.toggle('hidden')"
+                class="rounded-xl bg-accent px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-accent-light">
+            + 프로젝트 추가
+        </button>
+    </div>
+
+    <!-- Add Project Form -->
+    <div id="add-form" class="mb-8 hidden animate-slide-up">
+        <div class="rounded-2xl border border-white/[0.06] bg-surface-1 p-6">
+            <h2 class="mb-4 text-[15px] font-semibold">새 프로젝트 추가</h2>
+            <form method="POST" action="/projects" class="grid gap-4 sm:grid-cols-2">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <div>
+                    <label class="mb-1.5 block text-[12px] font-medium text-white/40">프로젝트 이름</label>
+                    <input type="text" name="name" required placeholder="kyuing-bot"
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2.5 text-sm text-white placeholder-white/25 outline-none focus:border-accent/50" />
+                </div>
+                <div>
+                    <label class="mb-1.5 block text-[12px] font-medium text-white/40">GitHub 레포 URL</label>
+                    <input type="url" name="repo_url" required placeholder="https://github.com/user/repo"
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2.5 text-sm text-white placeholder-white/25 outline-none focus:border-accent/50" />
+                </div>
+                <div>
+                    <label class="mb-1.5 block text-[12px] font-medium text-white/40">서버 배포 경로</label>
+                    <input type="text" name="deploy_path" required placeholder="/home/ubuntu/kyuing-bot"
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2.5 text-sm text-white placeholder-white/25 outline-none focus:border-accent/50" />
+                </div>
+                <div>
+                    <label class="mb-1.5 block text-[12px] font-medium text-white/40">브랜치</label>
+                    <input type="text" name="branch" value="main" required
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2.5 text-sm text-white placeholder-white/25 outline-none focus:border-accent/50" />
+                </div>
+                <div class="sm:col-span-2">
+                    <label class="mb-1.5 block text-[12px] font-medium text-white/40">Webhook Secret</label>
+                    <input type="password" name="webhook_secret" required minlength="16" placeholder="GitHub webhook에 설정할 secret"
+                           class="w-full rounded-lg border border-white/[0.08] bg-surface-2 px-3 py-2.5 text-sm text-white placeholder-white/25 outline-none focus:border-accent/50" />
+                </div>
+                <div class="sm:col-span-2 flex justify-end gap-2">
+                    <button type="button" onclick="document.getElementById('add-form').classList.add('hidden')"
+                            class="rounded-lg px-4 py-2.5 text-[13px] font-medium text-white/50 transition hover:bg-white/[0.06]">취소</button>
+                    <button type="submit"
+                            class="rounded-lg bg-accent px-5 py-2.5 text-[13px] font-semibold text-white transition hover:bg-accent-light">추가</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Project List -->
+    {% if projects %}
+    <div class="space-y-3">
+        {% for p in projects %}
+        <a href="/projects/{{ p.id }}"
+           class="group block rounded-2xl border border-white/[0.06] bg-surface-1 p-5 transition hover:border-white/[0.1] hover:bg-surface-2">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                    <div class="flex h-10 w-10 items-center justify-center rounded-xl
+                        {% if p.enabled %}bg-mint/10 text-mint{% else %}bg-white/[0.04] text-white/20{% endif %}">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    </div>
+                    <div>
+                        <h3 class="text-[15px] font-semibold group-hover:text-white">{{ p.name }}</h3>
+                        <p class="mt-0.5 text-[12px] text-white/30">{{ p.repo_url }} &middot; {{ p.branch }}</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    {% if p.last_status %}
+                    <span class="rounded-full px-2.5 py-1 text-[11px] font-medium
+                        {% if p.last_status == 'success' %}bg-mint/10 text-mint
+                        {% elif p.last_status == 'running' %}bg-sun/10 text-sun
+                        {% else %}bg-coral/10 text-coral{% endif %}">
+                        {{ p.last_status }}
+                    </span>
+                    {% endif %}
+                    {% if not p.enabled %}
+                    <span class="rounded-full bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-white/30">비활성</span>
+                    {% endif %}
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/20 transition group-hover:text-white/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.08] py-20 text-center">
+        <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.04]">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 text-white/20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <p class="text-sm text-white/30">등록된 프로젝트가 없습니다</p>
+        <p class="mt-1 text-[12px] text-white/20">위의 "프로젝트 추가" 버튼으로 시작하세요</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

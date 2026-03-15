@@ -1,0 +1,12 @@
+services:
+  deploy-hook:
+    build: .
+    container_name: deploy-hook
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-9000}:${PORT:-9000}"
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
