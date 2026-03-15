@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git docker.io docker-compose \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

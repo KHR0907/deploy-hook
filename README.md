@@ -14,7 +14,6 @@ GitHub webhook 또는 대시보드 버튼으로 서버의 프로젝트를 배포
 
 - Python 3.11+ 또는 Docker
 - Docker / Docker Compose
-- 배포 대상 프로젝트가 서버에 미리 clone 되어 있어야 함
 
 ## 환경 변수
 
@@ -95,11 +94,17 @@ docker compose up --build -d
 배포 시 서버에서 아래 명령이 실행됩니다.
 
 ```bash
-git pull origin <branch>
+git clone --branch <branch> <repo-url> <deploy_path>   # 경로가 없거나 비어 있으면
+git pull origin <branch>                               # 이미 clone 되어 있으면
 docker compose up --build -d
+docker compose ps -a
+docker compose logs --tail <N>
 ```
 
-즉, `서버 배포 경로`는 이미 Git 저장소와 `docker-compose.yml`이 있는 프로젝트 디렉터리여야 합니다.
+즉, `서버 배포 경로`는 다음 둘 중 하나면 됩니다.
+
+- 아직 없는 경로 또는 비어 있는 디렉터리
+- 이미 Git 저장소와 `docker-compose.yml`이 있는 프로젝트 디렉터리
 
 ## GitHub Webhook 설정
 
