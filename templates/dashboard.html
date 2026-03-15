@@ -69,20 +69,28 @@
     {% if projects %}
     <div class="space-y-3">
         {% for p in projects %}
-        <a href="/projects/{{ p.id }}"
-           class="group block rounded-2xl border border-white/[0.06] bg-surface-1 p-5 transition hover:border-white/[0.1] hover:bg-surface-2">
-            <div class="flex items-center justify-between">
+        <div class="group rounded-2xl border border-white/[0.06] bg-surface-1 p-5 transition hover:border-white/[0.1] hover:bg-surface-2">
+            <div class="flex items-center justify-between gap-4">
                 <div class="flex items-center gap-4">
                     <div class="flex h-10 w-10 items-center justify-center rounded-xl
                         {% if p.enabled %}bg-mint/10 text-mint{% else %}bg-white/[0.04] text-white/20{% endif %}">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                     </div>
                     <div>
-                        <h3 class="text-[15px] font-semibold group-hover:text-white">{{ p.name }}</h3>
+                        <a href="/projects/{{ p.id }}" class="text-[15px] font-semibold group-hover:text-white hover:underline">{{ p.name }}</a>
                         <p class="mt-0.5 text-[12px] text-white/30">{{ p.repo_url }} &middot; {{ p.branch }}</p>
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
+                    {% if p.enabled %}
+                    <form method="POST" action="/projects/{{ p.id }}/deploy">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                        <button type="submit"
+                                class="rounded-lg bg-accent px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-accent-light">
+                            지금 배포
+                        </button>
+                    </form>
+                    {% endif %}
                     {% if p.last_status %}
                     <span class="rounded-full px-2.5 py-1 text-[11px] font-medium
                         {% if p.last_status == 'success' %}bg-mint/10 text-mint
@@ -94,10 +102,10 @@
                     {% if not p.enabled %}
                     <span class="rounded-full bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-white/30">비활성</span>
                     {% endif %}
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/20 transition group-hover:text-white/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    <a href="/projects/{{ p.id }}" class="text-[12px] text-white/35 transition hover:text-white/60">상세</a>
                 </div>
             </div>
-        </a>
+        </div>
         {% endfor %}
     </div>
     {% else %}
