@@ -32,7 +32,15 @@ async def run_deploy(project: dict, commit_sha: str | None = None, commit_messag
         if not deploy_path.is_dir():
             raise FileNotFoundError(f"Deploy path does not exist: {deploy_path}")
 
-        pull_code, pull_output = await _run_command("git", "pull", "origin", branch, cwd=deploy_path)
+        pull_code, pull_output = await _run_command(
+            "git",
+            "-c",
+            f"safe.directory={deploy_path}",
+            "pull",
+            "origin",
+            branch,
+            cwd=deploy_path,
+        )
         compose_code, compose_output = (0, "")
         if pull_code == 0:
             compose_code, compose_output = await _run_command("docker", "compose", "up", "--build", "-d", cwd=deploy_path)
