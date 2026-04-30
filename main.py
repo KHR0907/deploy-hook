@@ -148,6 +148,24 @@ def _validate_webhook_secret(secret: str) -> str:
     return value
 
 
+def _validate_step_name(name: str) -> str:
+    value = name.strip()
+    if not value:
+        raise ValueError("단계 이름을 입력하세요.")
+    if len(value) > 80:
+        raise ValueError("단계 이름이 너무 깁니다.")
+    return value
+
+
+def _validate_step_command(command: str) -> str:
+    value = command.strip()
+    if not value:
+        raise ValueError("실행 명령을 입력하세요.")
+    if any(ch in value for ch in ("\x00",)):
+        raise ValueError("명령에 허용되지 않는 문자가 포함되어 있습니다.")
+    return value
+
+
 def _project_template_context(request: Request, **extra: object) -> dict[str, object]:
     context: dict[str, object] = {"request": request, "csrf_token": _get_csrf_token(request)}
     context.update(extra)
@@ -269,9 +287,16 @@ async def project_detail(request: Request, project_id: int):
         _set_notice(request, "error", "프로젝트를 찾을 수 없습니다.")
         return RedirectResponse("/", status_code=303)
     logs = await db.get_deploy_logs(project_id)
+    steps = await db.get_steps(project_id)
     return templates.TemplateResponse(
         "project.html",
-        _project_template_context(request, project=project, logs=logs, notice=_pop_notice(request)),
+        _project_template_context(
+            request,
+            project=project,
+            logs=logs,
+            steps=steps,
+            notice=_pop_notice(request),
+        ),
     )
 
 
@@ -340,6 +365,118 @@ async def manual_deploy(request: Request, project_id: int, csrf_token: str = For
         return RedirectResponse("/", status_code=303)
     asyncio.create_task(run_deploy(project, commit_sha=None, commit_message="Manual deploy"))
     _set_notice(request, "success", f"'{project['name']}' 배포가 시작되었습니다.")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+# ── Steps (Pipeline) ──────────────────────────────────────────────────
+
+def _form_bool(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "on", "yes"}
+
+
+@app.post("/projects/{project_id}/steps")
+async def create_step(
+    request: Request,
+    project_id: int,
+    name: str = Form(...),
+    command: str = Form(...),
+    use_shell: str = Form(""),
+    csrf_token: str = Form(...),
+):
+    if redirect := _require_login(request):
+        return redirect
+    if redirect := _require_csrf(request, csrf_token):
+        return redirect
+    project = await db.get_project(project_id)
+    if not project:
+        _set_notice(request, "error", "프로젝트를 찾을 수 없습니다.")
+        return RedirectResponse("/", status_code=303)
+    try:
+        await db.create_step(
+            project_id,
+            name=_validate_step_name(name),
+            command=_validate_step_command(command),
+            use_shell=_form_bool(use_shell),
+        )
+        _set_notice(request, "success", "단계가 추가되었습니다.")
+    except Exception as exc:
+        _set_notice(request, "error", str(exc))
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/steps/{step_id}/update")
+async def update_step(
+    request: Request,
+    project_id: int,
+    step_id: int,
+    name: str = Form(...),
+    command: str = Form(...),
+    use_shell: str = Form(""),
+    csrf_token: str = Form(...),
+):
+    if redirect := _require_login(request):
+        return redirect
+    if redirect := _require_csrf(request, csrf_token):
+        return redirect
+    step = await db.get_step(step_id)
+    if not step or step["project_id"] != project_id:
+        _set_notice(request, "error", "단계를 찾을 수 없습니다.")
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
+    try:
+        await db.update_step(
+            step_id,
+            name=_validate_step_name(name),
+            command=_validate_step_command(command),
+            use_shell=_form_bool(use_shell),
+        )
+        _set_notice(request, "success", "단계가 수정되었습니다.")
+    except Exception as exc:
+        _set_notice(request, "error", str(exc))
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/steps/{step_id}/delete")
+async def delete_step(request: Request, project_id: int, step_id: int, csrf_token: str = Form(...)):
+    if redirect := _require_login(request):
+        return redirect
+    if redirect := _require_csrf(request, csrf_token):
+        return redirect
+    step = await db.get_step(step_id)
+    if step and step["project_id"] == project_id:
+        await db.delete_step(step_id)
+        _set_notice(request, "success", "단계가 삭제되었습니다.")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/steps/{step_id}/toggle")
+async def toggle_step(request: Request, project_id: int, step_id: int, csrf_token: str = Form(...)):
+    if redirect := _require_login(request):
+        return redirect
+    if redirect := _require_csrf(request, csrf_token):
+        return redirect
+    step = await db.get_step(step_id)
+    if step and step["project_id"] == project_id:
+        await db.toggle_step(step_id)
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/steps/{step_id}/move")
+async def move_step(
+    request: Request,
+    project_id: int,
+    step_id: int,
+    direction: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    if redirect := _require_login(request):
+        return redirect
+    if redirect := _require_csrf(request, csrf_token):
+        return redirect
+    step = await db.get_step(step_id)
+    if step and step["project_id"] == project_id and direction in ("up", "down"):
+        await db.move_step(step_id, direction)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 

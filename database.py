@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import aiosqlite
 
 from config import DATABASE_PATH
@@ -26,7 +28,22 @@ CREATE TABLE IF NOT EXISTS deploy_logs (
     started_at     TEXT    NOT NULL DEFAULT (datetime('now')),
     finished_at    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS steps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL,
+    name        TEXT    NOT NULL,
+    command     TEXT    NOT NULL,
+    use_shell   INTEGER NOT NULL DEFAULT 1,
+    enabled     INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_steps_project ON steps(project_id, position);
 """
+
+DEFAULT_STEP_NAME = "Build & Deploy"
+DEFAULT_STEP_COMMAND = "docker compose up --build -d"
 
 
 async def init_db() -> None:
@@ -38,9 +55,6 @@ async def init_db() -> None:
 
 def _row_to_dict(cursor: aiosqlite.Cursor, row: tuple) -> dict:
     return {col[0]: val for col, val in zip(cursor.description, row)}
-
-
-from contextlib import asynccontextmanager
 
 
 @asynccontextmanager
@@ -94,8 +108,13 @@ async def create_project(name: str, repo_url: str, deploy_path: str, branch: str
             "INSERT INTO projects (name, repo_url, deploy_path, branch, webhook_secret) VALUES (?, ?, ?, ?, ?)",
             (name, repo_url, deploy_path, branch, webhook_secret),
         )
+        project_id: int = cur.lastrowid  # type: ignore[assignment]
+        await db.execute(
+            "INSERT INTO steps (project_id, position, name, command, use_shell, enabled) VALUES (?, 1, ?, ?, 1, 1)",
+            (project_id, DEFAULT_STEP_NAME, DEFAULT_STEP_COMMAND),
+        )
         await db.commit()
-        return cur.lastrowid  # type: ignore[return-value]
+        return project_id
 
 
 async def update_project(
@@ -161,3 +180,101 @@ async def get_deploy_logs(project_id: int, limit: int = 20) -> list[dict]:
             (project_id, limit),
         )
         return await cur.fetchall()
+
+
+# ── Steps ─────────────────────────────────────────────────────────────
+
+async def get_steps(project_id: int) -> list[dict]:
+    async with _conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM steps WHERE project_id = ? ORDER BY position, id",
+            (project_id,),
+        )
+        return await cur.fetchall()
+
+
+async def get_enabled_steps(project_id: int) -> list[dict]:
+    async with _conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM steps WHERE project_id = ? AND enabled = 1 ORDER BY position, id",
+            (project_id,),
+        )
+        return await cur.fetchall()
+
+
+async def get_step(step_id: int) -> dict | None:
+    async with _conn() as db:
+        cur = await db.execute("SELECT * FROM steps WHERE id = ?", (step_id,))
+        return await cur.fetchone()
+
+
+async def create_step(project_id: int, name: str, command: str, use_shell: bool) -> int:
+    async with _conn() as db:
+        cur = await db.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 AS pos FROM steps WHERE project_id = ?",
+            (project_id,),
+        )
+        row = await cur.fetchone()
+        position = row["pos"] if row else 1
+        cur = await db.execute(
+            "INSERT INTO steps (project_id, position, name, command, use_shell) VALUES (?, ?, ?, ?, ?)",
+            (project_id, position, name, command, 1 if use_shell else 0),
+        )
+        await db.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+async def update_step(step_id: int, *, name: str, command: str, use_shell: bool) -> None:
+    async with _conn() as db:
+        await db.execute(
+            "UPDATE steps SET name=?, command=?, use_shell=? WHERE id=?",
+            (name, command, 1 if use_shell else 0, step_id),
+        )
+        await db.commit()
+
+
+async def delete_step(step_id: int) -> None:
+    async with _conn() as db:
+        await db.execute("DELETE FROM steps WHERE id = ?", (step_id,))
+        await db.commit()
+
+
+async def toggle_step(step_id: int) -> None:
+    async with _conn() as db:
+        await db.execute("UPDATE steps SET enabled = 1 - enabled WHERE id = ?", (step_id,))
+        await db.commit()
+
+
+async def move_step(step_id: int, direction: str) -> None:
+    """Swap position with the previous (up) or next (down) step in the same project."""
+    if direction not in ("up", "down"):
+        return
+    async with _conn() as db:
+        cur = await db.execute("SELECT id, project_id, position FROM steps WHERE id = ?", (step_id,))
+        current = await cur.fetchone()
+        if not current:
+            return
+        if direction == "up":
+            cur = await db.execute(
+                "SELECT id, position FROM steps WHERE project_id = ? AND position < ? "
+                "ORDER BY position DESC, id DESC LIMIT 1",
+                (current["project_id"], current["position"]),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT id, position FROM steps WHERE project_id = ? AND position > ? "
+                "ORDER BY position ASC, id ASC LIMIT 1",
+                (current["project_id"], current["position"]),
+            )
+        neighbor = await cur.fetchone()
+        if not neighbor:
+            return
+        await db.execute(
+            "UPDATE steps SET position = ? WHERE id = ?",
+            (neighbor["position"], current["id"]),
+        )
+        await db.execute(
+            "UPDATE steps SET position = ? WHERE id = ?",
+            (current["position"], neighbor["id"]),
+        )
+        await db.commit()
