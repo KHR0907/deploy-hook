@@ -214,6 +214,12 @@ async def finish_deploy_log(log_id: int, status: str, output: str) -> None:
         await db.commit()
 
 
+async def get_deploy_log(log_id: int) -> dict | None:
+    async with _conn() as db:
+        cur = await db.execute("SELECT * FROM deploy_logs WHERE id = ?", (log_id,))
+        return await cur.fetchone()
+
+
 async def get_deploy_logs(project_id: int, limit: int = 20) -> list[dict]:
     async with _conn() as db:
         cur = await db.execute(

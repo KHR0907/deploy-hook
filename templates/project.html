@@ -116,6 +116,49 @@
         </div>
     </div>
 
+    {% if logs and logs[0].status == 'running' %}
+    <!-- Live Log -->
+    <div id="live-card" class="mb-6 rounded-2xl border border-sun/30 bg-sun/[0.04] p-5">
+        <div class="mb-3 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <span id="live-dot" class="inline-flex h-2 w-2 animate-pulse rounded-full bg-sun"></span>
+                <h3 class="text-[14px] font-semibold">실시간 배포 로그</h3>
+                <span id="live-status" class="text-[12px] text-white/40">진행 중…</span>
+            </div>
+            <span class="font-mono text-[11px] text-white/30">log #{{ logs[0].id }}</span>
+        </div>
+        <pre id="live-output" class="max-h-96 overflow-auto whitespace-pre-wrap rounded-xl bg-surface-0 p-3 font-mono text-[12px] leading-relaxed text-white/70"></pre>
+    </div>
+    <script>
+    (function() {
+        const logId = {{ logs[0].id }};
+        const projectId = {{ project.id }};
+        const out = document.getElementById('live-output');
+        const status = document.getElementById('live-status');
+        const dot = document.getElementById('live-dot');
+        const es = new EventSource(`/projects/${projectId}/logs/${logId}/stream`);
+        let firstLine = true;
+        es.addEventListener('line', (e) => {
+            if (firstLine) { out.textContent = e.data; firstLine = false; }
+            else { out.textContent += '\n' + e.data; }
+            out.scrollTop = out.scrollHeight;
+        });
+        es.addEventListener('done', (e) => {
+            es.close();
+            const ok = e.data === 'success';
+            status.textContent = ok ? '완료: success' : `완료: ${e.data}`;
+            status.className = 'text-[12px] ' + (ok ? 'text-mint' : 'text-coral');
+            dot.classList.remove('animate-pulse', 'bg-sun');
+            dot.classList.add(ok ? 'bg-mint' : 'bg-coral');
+            setTimeout(() => location.reload(), 1500);
+        });
+        es.onerror = () => {
+            // EventSource auto-reconnects; nothing to do here.
+        };
+    })();
+    </script>
+    {% endif %}
+
     <!-- Pipeline (Steps) -->
     <div class="mb-8 rounded-2xl border border-white/[0.06] bg-surface-1 p-6">
         <div class="mb-4 flex items-center justify-between">

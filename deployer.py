@@ -7,12 +7,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import broker
 import database as db
 
 log = logging.getLogger("deploy-hook")
 
 GIT_TIMEOUT_SECONDS = 300
 STEP_TIMEOUT_SECONDS = 1800
+READLINE_KEEPALIVE_SECONDS = 30
 
 _DEPLOY_LOCKS: dict[int, asyncio.Lock] = {}
 
@@ -26,36 +28,30 @@ def _project_lock(project_id: int) -> asyncio.Lock:
 
 
 @dataclass(slots=True)
-class CommandResult:
-    display: str
-    cwd: Path
-    duration_seconds: float
-    output: str
-    returncode: int | None
-    timed_out: bool
-    timeout_seconds: int
-
-    @property
-    def succeeded(self) -> bool:
-        return not self.timed_out and self.returncode == 0
+class StepResult:
+    succeeded: bool
 
 
-def _render_section(title: str, body: str) -> str:
-    return f"=== {title} ===\n{body.strip()}"
+class _Sink:
+    """Collects every emitted line for the final DB write and broadcasts it
+    live through the broker."""
 
+    def __init__(self, log_id: int) -> None:
+        self.log_id = log_id
+        self.lines: list[str] = []
 
-def _render_command(result: CommandResult) -> str:
-    lines = [
-        f"$ (cd {shlex.quote(str(result.cwd))} && {result.display})",
-        f"duration: {result.duration_seconds:.1f}s",
-    ]
-    if result.timed_out:
-        lines.append(f"status: timed out after {result.timeout_seconds}s")
-    else:
-        lines.append(f"exit_code: {result.returncode}")
-    lines.append("")
-    lines.append(result.output.strip() or "(no output)")
-    return "\n".join(lines)
+    def write(self, line: str) -> None:
+        for piece in line.split("\n"):
+            self.lines.append(piece)
+            broker.publish_line(self.log_id, piece)
+
+    def section(self, title: str) -> None:
+        if self.lines:
+            self.write("")
+        self.write(f"=== {title} ===")
+
+    def text(self) -> str:
+        return "\n".join(self.lines)
 
 
 def _is_git_repo(deploy_path: Path) -> bool:
@@ -66,162 +62,196 @@ def _is_directory_empty(path: Path) -> bool:
     return not any(path.iterdir())
 
 
-async def _run_argv(argv: tuple[str, ...], cwd: Path, timeout_seconds: int) -> CommandResult:
-    started_at = time.monotonic()
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    return await _consume(proc, shlex.join(argv), cwd, started_at, timeout_seconds)
-
-
-async def _run_shell(command: str, cwd: Path, timeout_seconds: int) -> CommandResult:
-    started_at = time.monotonic()
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    return await _consume(proc, command, cwd, started_at, timeout_seconds)
-
-
-async def _consume(
-    proc: asyncio.subprocess.Process,
-    display: str,
+async def _run(
+    *,
+    argv: tuple[str, ...] | None,
+    shell_cmd: str | None,
     cwd: Path,
-    started_at: float,
-    timeout_seconds: int,
-) -> CommandResult:
+    timeout: int,
+    sink: _Sink,
+) -> StepResult:
+    started = time.monotonic()
+    if argv is not None:
+        display = shlex.join(argv)
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    else:
+        assert shell_cmd is not None
+        display = shell_cmd
+        proc = await asyncio.create_subprocess_shell(
+            shell_cmd,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+    sink.write(f"$ (cd {shlex.quote(str(cwd))} && {display})")
+
+    deadline = started + timeout
     timed_out = False
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-    except asyncio.TimeoutError:
-        timed_out = True
-        proc.kill()
-        stdout, _ = await proc.communicate()
-    output = stdout.decode(errors="replace") if stdout else ""
-    return CommandResult(
-        display=display,
-        cwd=cwd,
-        duration_seconds=time.monotonic() - started_at,
-        output=output,
-        returncode=None if timed_out else proc.returncode,
-        timed_out=timed_out,
-        timeout_seconds=timeout_seconds,
-    )
+    assert proc.stdout is not None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            raw = await asyncio.wait_for(
+                proc.stdout.readline(),
+                timeout=min(remaining, READLINE_KEEPALIVE_SECONDS),
+            )
+        except asyncio.TimeoutError:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            continue
+        if not raw:
+            break
+        sink.write(raw.decode(errors="replace").rstrip("\r\n"))
+
+    if timed_out:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    await proc.wait()
+    duration = time.monotonic() - started
+    if timed_out:
+        sink.write(f"status: timed out after {timeout}s")
+        sink.write(f"duration: {duration:.1f}s")
+        return StepResult(succeeded=False)
+    sink.write(f"duration: {duration:.1f}s")
+    sink.write(f"exit_code: {proc.returncode}")
+    return StepResult(succeeded=proc.returncode == 0)
 
 
-async def _ensure_source(project: dict, deploy_path: Path) -> tuple[CommandResult, str]:
-    """Clone or pull the repo into deploy_path. Returns (result, section title)."""
+async def _ensure_source(project: dict, deploy_path: Path, sink: _Sink) -> StepResult:
     branch = project["branch"]
     if not deploy_path.exists():
         deploy_path.parent.mkdir(parents=True, exist_ok=True)
-        result = await _run_argv(
-            (
+        sink.section("git clone")
+        return await _run(
+            argv=(
                 "git", "clone",
                 "--branch", branch,
                 "--single-branch",
                 project["repo_url"],
                 str(deploy_path),
             ),
+            shell_cmd=None,
             cwd=deploy_path.parent,
-            timeout_seconds=GIT_TIMEOUT_SECONDS,
+            timeout=GIT_TIMEOUT_SECONDS,
+            sink=sink,
         )
-        return result, "git clone"
     if not deploy_path.is_dir():
-        raise FileNotFoundError(f"Deploy path is not a directory: {deploy_path}")
+        sink.section("error")
+        sink.write(f"Deploy path is not a directory: {deploy_path}")
+        return StepResult(succeeded=False)
     if _is_git_repo(deploy_path):
-        result = await _run_argv(
-            (
+        sink.section("git pull")
+        return await _run(
+            argv=(
                 "git",
                 "-c", f"safe.directory={deploy_path}",
                 "pull", "origin", branch,
             ),
+            shell_cmd=None,
             cwd=deploy_path,
-            timeout_seconds=GIT_TIMEOUT_SECONDS,
+            timeout=GIT_TIMEOUT_SECONDS,
+            sink=sink,
         )
-        return result, "git pull"
     if _is_directory_empty(deploy_path):
-        result = await _run_argv(
-            (
+        sink.section("git clone")
+        return await _run(
+            argv=(
                 "git", "clone",
                 "--branch", branch,
                 "--single-branch",
                 project["repo_url"],
                 ".",
             ),
+            shell_cmd=None,
             cwd=deploy_path,
-            timeout_seconds=GIT_TIMEOUT_SECONDS,
+            timeout=GIT_TIMEOUT_SECONDS,
+            sink=sink,
         )
-        return result, "git clone"
-    raise FileNotFoundError(f"Deploy path exists but is not a git repository: {deploy_path}")
+    sink.section("error")
+    sink.write(f"Deploy path exists but is not a git repository: {deploy_path}")
+    return StepResult(succeeded=False)
 
 
-async def _run_step(step: dict, deploy_path: Path) -> CommandResult:
+async def _run_step(step: dict, deploy_path: Path, sink: _Sink) -> StepResult:
     command = step["command"]
     if step["use_shell"]:
-        return await _run_shell(command, cwd=deploy_path, timeout_seconds=STEP_TIMEOUT_SECONDS)
+        return await _run(
+            argv=None,
+            shell_cmd=command,
+            cwd=deploy_path,
+            timeout=STEP_TIMEOUT_SECONDS,
+            sink=sink,
+        )
     argv = tuple(shlex.split(command))
     if not argv:
-        raise ValueError(f"Step '{step['name']}' has empty command.")
-    return await _run_argv(argv, cwd=deploy_path, timeout_seconds=STEP_TIMEOUT_SECONDS)
+        sink.write(f"error: step '{step['name']}' has empty command")
+        return StepResult(succeeded=False)
+    return await _run(
+        argv=argv,
+        shell_cmd=None,
+        cwd=deploy_path,
+        timeout=STEP_TIMEOUT_SECONDS,
+        sink=sink,
+    )
 
 
-async def run_deploy(project: dict, commit_sha: str | None = None, commit_message: str | None = None) -> None:
-    log_id = await db.create_deploy_log(project["id"], commit_sha, commit_message)
+async def run_deploy(
+    project: dict,
+    log_id: int,
+    commit_sha: str | None = None,
+    commit_message: str | None = None,
+) -> None:
     log.info("Deploy queued: project=%s log_id=%d", project["name"], log_id)
+    sink = _Sink(log_id)
 
     async with _project_lock(project["id"]):
         log.info("Deploy started: project=%s log_id=%d", project["name"], log_id)
         deploy_path = Path(project["deploy_path"]).expanduser()
 
-        sections = [
-            _render_section(
-                "Deploy Context",
-                "\n".join([
-                    f"project: {project['name']}",
-                    f"deploy_path: {deploy_path}",
-                    f"branch: {project['branch']}",
-                    f"commit_sha: {commit_sha or '-'}",
-                    f"commit_message: {commit_message or 'Manual deploy'}",
-                ]),
-            )
-        ]
-        status = "success"
+        sink.section("Deploy Context")
+        sink.write(f"project: {project['name']}")
+        sink.write(f"deploy_path: {deploy_path}")
+        sink.write(f"branch: {project['branch']}")
+        sink.write(f"commit_sha: {commit_sha or '-'}")
+        sink.write(f"commit_message: {commit_message or 'Manual deploy'}")
 
+        status = "success"
         try:
-            git_result, git_title = await _ensure_source(project, deploy_path)
-            sections.append(_render_section(git_title, _render_command(git_result)))
+            git_result = await _ensure_source(project, deploy_path, sink)
             if not git_result.succeeded:
                 status = "failed"
             else:
                 steps = await db.get_enabled_steps(project["id"])
                 if not steps:
-                    sections.append(_render_section(
-                        "Pipeline",
-                        "활성화된 단계가 없습니다. 프로젝트 설정에서 단계를 추가하세요.",
-                    ))
+                    sink.section("Pipeline")
+                    sink.write("활성화된 단계가 없습니다. 프로젝트 설정에서 단계를 추가하세요.")
                     status = "failed"
                 else:
                     for index, step in enumerate(steps, start=1):
-                        title = f"step {index}: {step['name']}"
-                        try:
-                            result = await _run_step(step, deploy_path)
-                        except Exception as exc:
-                            sections.append(_render_section(title, f"error: {exc}"))
-                            status = "failed"
-                            break
-                        sections.append(_render_section(title, _render_command(result)))
+                        sink.section(f"step {index}: {step['name']}")
+                        result = await _run_step(step, deploy_path, sink)
                         if not result.succeeded:
                             status = "failed"
                             break
         except Exception as exc:
-            sections.append(_render_section("error", str(exc)))
+            sink.section("error")
+            sink.write(str(exc))
             status = "failed"
 
-        output = "\n\n".join(sections)
-        await db.finish_deploy_log(log_id, status, output)
+        sink.section(f"deploy: {status}")
+
+        await db.finish_deploy_log(log_id, status, sink.text())
+        broker.publish_done(log_id, status)
         log.info("Deploy finished: project=%s status=%s", project["name"], status)

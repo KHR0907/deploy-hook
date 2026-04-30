@@ -10,10 +10,11 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Form, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+import broker
 import config
 import database as db
 from deployer import run_deploy
@@ -363,7 +364,8 @@ async def manual_deploy(request: Request, project_id: int, csrf_token: str = For
     if not project:
         _set_notice(request, "error", "프로젝트를 찾을 수 없습니다.")
         return RedirectResponse("/", status_code=303)
-    asyncio.create_task(run_deploy(project, commit_sha=None, commit_message="Manual deploy"))
+    log_id = await db.create_deploy_log(project_id, None, "Manual deploy")
+    asyncio.create_task(run_deploy(project, log_id, commit_sha=None, commit_message="Manual deploy"))
     _set_notice(request, "success", f"'{project['name']}' 배포가 시작되었습니다.")
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -480,6 +482,71 @@ async def move_step(
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
+# ── Live log stream (SSE) ─────────────────────────────────────────────
+
+def _format_sse(event_type: str, data: str, event_id: int) -> str:
+    parts: list[str] = []
+    if event_id:
+        parts.append(f"id: {event_id}")
+    parts.append(f"event: {event_type}")
+    for line in data.split("\n"):
+        parts.append(f"data: {line}")
+    return "\n".join(parts) + "\n\n"
+
+
+@app.get("/projects/{project_id}/logs/{log_id}/stream")
+async def stream_log(request: Request, project_id: int, log_id: int):
+    if not _is_logged_in(request):
+        return Response(status_code=401)
+    deploy_log = await db.get_deploy_log(log_id)
+    if not deploy_log or deploy_log["project_id"] != project_id:
+        return Response(status_code=404)
+
+    last_event_id = 0
+    raw = request.headers.get("last-event-id")
+    if raw and raw.isdigit():
+        last_event_id = int(raw)
+
+    async def event_stream():
+        sub = broker.subscribe(log_id, since=last_event_id)
+        if sub is None:
+            # No live state — replay persisted output if the deploy has finished.
+            if deploy_log["status"] != "running":
+                lines = (deploy_log["output"] or "").split("\n")
+                for n, line in enumerate(lines, start=1):
+                    if n > last_event_id:
+                        yield _format_sse("line", line, n)
+                yield _format_sse("done", deploy_log["status"], 0)
+            else:
+                yield _format_sse("done", "stream_unavailable", 0)
+            return
+
+        q, backlog = sub
+        try:
+            for kind, payload, idx in backlog:
+                yield _format_sse(kind, payload, idx)
+                if kind == "done":
+                    return
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                kind, payload, idx = msg
+                yield _format_sse(kind, payload, idx)
+                if kind == "done":
+                    return
+        finally:
+            broker.unsubscribe(log_id, q)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ── Webhook ───────────────────────────────────────────────────────────
 
 @app.post("/webhook")
@@ -517,7 +584,8 @@ async def webhook(request: Request):
     commit_sha = head_commit.get("id", "")[:8]
     commit_message = head_commit.get("message", "")
 
-    asyncio.create_task(run_deploy(project, commit_sha, commit_message))
+    log_id = await db.create_deploy_log(project["id"], commit_sha, commit_message)
+    asyncio.create_task(run_deploy(project, log_id, commit_sha, commit_message))
     log.info("Webhook deploy triggered: project=%s commit=%s", project["name"], commit_sha)
     return {"status": "deploying"}
 
