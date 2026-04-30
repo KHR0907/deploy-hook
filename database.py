@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 import aiosqlite
 
-from config import DATABASE_PATH
+from config import DATABASE_PATH, DEPLOY_LOG_MAX_BYTES, DEPLOY_LOG_RETENTION
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -49,8 +49,31 @@ DEFAULT_STEP_COMMAND = "docker compose up --build -d"
 async def init_db() -> None:
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("PRAGMA auto_vacuum")
+        row = await cur.fetchone()
+        current_mode = row[0] if row else 0
+        if current_mode != 2:
+            await db.execute("PRAGMA auto_vacuum = INCREMENTAL")
+            await db.execute("VACUUM")
         await db.executescript(_SCHEMA)
+        await db.execute(
+            """
+            INSERT INTO steps (project_id, position, name, command, use_shell, enabled)
+            SELECT p.id, 1, ?, ?, 1, 1
+            FROM projects p
+            WHERE NOT EXISTS (SELECT 1 FROM steps s WHERE s.project_id = p.id)
+            """,
+            (DEFAULT_STEP_NAME, DEFAULT_STEP_COMMAND),
+        )
         await db.commit()
+
+
+def _truncate_output(output: str) -> str:
+    encoded = output.encode("utf-8", errors="replace")
+    if len(encoded) <= DEPLOY_LOG_MAX_BYTES:
+        return output
+    head = encoded[:DEPLOY_LOG_MAX_BYTES].decode("utf-8", errors="replace")
+    return head + f"\n\n... (truncated; original output was {len(encoded)} bytes)"
 
 
 def _row_to_dict(cursor: aiosqlite.Cursor, row: tuple) -> dict:
@@ -165,11 +188,29 @@ async def create_deploy_log(project_id: int, commit_sha: str | None, commit_mess
 
 
 async def finish_deploy_log(log_id: int, status: str, output: str) -> None:
+    output = _truncate_output(output)
     async with _conn() as db:
         await db.execute(
             "UPDATE deploy_logs SET status=?, output=?, finished_at=datetime('now') WHERE id=?",
             (status, output, log_id),
         )
+        cur = await db.execute("SELECT project_id FROM deploy_logs WHERE id=?", (log_id,))
+        row = await cur.fetchone()
+        if row:
+            project_id = row["project_id"]
+            await db.execute(
+                """
+                DELETE FROM deploy_logs
+                WHERE project_id = ?
+                  AND id NOT IN (
+                      SELECT id FROM deploy_logs
+                      WHERE project_id = ?
+                      ORDER BY id DESC LIMIT ?
+                  )
+                """,
+                (project_id, project_id, DEPLOY_LOG_RETENTION),
+            )
+        await db.execute("PRAGMA incremental_vacuum")
         await db.commit()
 
 

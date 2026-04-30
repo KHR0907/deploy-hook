@@ -38,6 +38,8 @@ cp .env.example .env
 | `PORT` | 앱 포트 (기본 9000) |
 | `DATABASE_PATH` | SQLite 파일 경로 (기본 `data/deploy-hook.db`) |
 | `SESSION_HTTPS_ONLY` | HTTPS 환경에서 `true` 권장 |
+| `DEPLOY_LOG_RETENTION` | 프로젝트별로 보관할 최근 배포 로그 개수 (기본 50, 초과분 자동 삭제) |
+| `DEPLOY_LOG_MAX_BYTES` | 단일 배포 로그의 최대 크기 (기본 262144, 초과분은 잘리고 안내 메시지 추가) |
 
 ## 로컬 실행
 
